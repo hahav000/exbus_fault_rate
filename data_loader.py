@@ -59,6 +59,18 @@ COMPANY_FIX = {"금혹고속": "금호고속", "경부선": "(미확인)", "동�
 # (김선곤=광주 1건 -> 광주 전담 김성곤. 김선웅은 별도 인물일 수 있어 건드리지 않음)
 STAFF_FIX = {"이경핀": "이경필", "박벙태": "박병태", "김선곤": "김성곤"}
 
+_STAFF_PLACEHOLDER = "(미기재)"
+
+
+def _mask_name(name: str) -> str:
+    """개인정보 보호 - 이름 가운데 글자를 '*'로 가린다(예: 박병태 -> 박*태).
+    2글자 이름은 뒷글자만 가린다(예: 박태 -> 박*)."""
+    if not isinstance(name, str) or name == _STAFF_PLACEHOLDER or len(name) < 2:
+        return name
+    if len(name) == 2:
+        return name[0] + "*"
+    return name[0] + "*" * (len(name) - 2) + name[-1]
+
 # 처리 대분류: 띄어쓰기/표기 변형 통합
 ACTION_FIX = {
     "GPS 안테나 교체": "GPS안테나교체", "GPS안테나 교체": "GPS안테나교체",
@@ -151,7 +163,8 @@ def _normalize_field(df: pd.DataFrame) -> pd.DataFrame:
     df["처리지역"] = df["처리지역"].replace(REGION_FIX)
     df["처리거점"] = df["처리거점"].replace(BASE_FIX)
     df["고속사"] = df["고속사"].replace(COMPANY_FIX)
-    df["처리담당자"] = df["처리담당자"].fillna("(미기재)").replace(STAFF_FIX)
+    df["처리담당자"] = (df["처리담당자"].fillna(_STAFF_PLACEHOLDER).replace(STAFF_FIX)
+                        .map(_mask_name))
     df["처리 대분류"] = df["처리 대분류"].replace(ACTION_FIX)
 
     df["연도"] = df["일자"].dt.year
@@ -181,24 +194,6 @@ def load_data(paths: tuple[str, ...], _fp: tuple) -> pd.DataFrame:
     return _normalize_field(pd.concat(frames, ignore_index=True))
 
 
-@st.cache_data(show_spinner="업로드한 장애접수 엑셀을 읽는 중…")
-def load_data_from_uploads(files) -> pd.DataFrame:
-    """사이드바에서 업로드한 장애접수 엑셀(최대 2개)을 읽어 정규화한다.
-
-    업로드 파일은 세션 메모리에만 있어 디스크 캐시(persist)는 쓰지 않는다 -
-    브라우저 업로드 위젯의 파일 객체(UploadedFile)는 내용으로 해시되므로,
-    같은 파일을 다시 올리지 않는 한 재계산되지 않는다.
-    """
-    frames = []
-    for f in files:
-        f.seek(0)
-        df = pd.read_excel(f, sheet_name=SHEET, header=HEADER_ROW, engine="openpyxl")
-        df = df.loc[:, ~df.columns.astype(str).str.startswith("Unnamed")]
-        df["원본파일"] = getattr(f, "name", "업로드파일")
-        frames.append(df)
-    return _normalize_field(pd.concat(frames, ignore_index=True))
-
-
 def weekly_counts(df: pd.DataFrame) -> pd.DataFrame:
     """주차별 건수 (주차키로 정렬, 표시는 주차라벨)."""
     g = (df.groupby(["주차키", "주차라벨"], as_index=False)
@@ -215,6 +210,54 @@ def top_n(df: pd.DataFrame, col: str, n: int = 10, other: bool = False) -> pd.Da
     if other and len(vc) > n:
         rest = int(vc.iloc[n:].sum())
         out = pd.concat([out, pd.DataFrame({col: ["기타"], "건수": [rest]})], ignore_index=True)
+    return out
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 고속사별 차량대수 - 장애 비율을 "건수"가 아니라 "차량 1대당 건수"로 보기 위한
+# 분모. `고속사별차량대수.txt`(줄마다 `회사명:N대`)를 읽는다.
+#
+# 장애실적의 `고속사` 컬럼은 회사명 뒤에 '고속'/'코치' 접미사가 붙어 있어(예:
+# 금호고속) 대수 파일의 접미사 없는 이름과 바로 비교할 수 없다 - normalize_company()
+# 로 접미사를 떼어 같은 축약형으로 맞춘다. '금호2팀'처럼 소속팀이 나뉜 경우도
+# 장애실적에는 '금호고속' 하나로만 기록돼 구분할 수 없어, 같은 이름으로 합산한다.
+# ═══════════════════════════════════════════════════════════════════
+
+FLEET_FILE = "고속사별차량대수.txt"
+
+
+def load_company_fleet_sizes(base_dir: str | Path = ".") -> dict[str, int]:
+    """`고속사별차량대수.txt`를 읽어 {정규화된 회사명: 대수}로 반환. 파일이 없으면 빈 dict."""
+    path = Path(base_dir) / FLEET_FILE
+    if not path.exists():
+        return {}
+    sizes: dict[str, int] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or ":" not in line:
+            continue
+        name, _, rest = line.partition(":")
+        n = re.search(r"\d+", rest)
+        if not n:
+            continue
+        name = re.sub(r"\d*팀$", "", name.strip())  # '금호2팀' -> '금호'
+        sizes[name] = sizes.get(name, 0) + int(n.group())
+    return sizes
+
+
+def normalize_company(name) -> str:
+    """장애실적 `고속사` 값에서 대수 파일과 맞는 축약 이름을 뽑는다(접미사 제거)."""
+    return re.sub(r"(고속|코치)$", "", str(name).strip())
+
+
+def with_fleet_rate(df: pd.DataFrame, group_col: str, fleet_sizes: dict[str, int],
+                    count_col: str = "건수") -> pd.DataFrame:
+    """`group_col`별 건수 표에 차량대수와 '대당 건수'를 붙인다. 대수를 모르는 회사는
+    `대수`가 비어 있고(`비율산정 대상: N/전체` 캡션용으로 별도 안내), 비율 계산에서 빠진다."""
+    out = df.copy()
+    key = out[group_col].map(normalize_company)
+    out["차량대수"] = key.map(fleet_sizes)
+    out["대당건수"] = out[count_col] / out["차량대수"]
     return out
 
 
@@ -315,33 +358,6 @@ def load_repair_data(paths: tuple[str, ...], _fp: tuple) -> pd.DataFrame:
     return _normalize_repair(pd.concat(frames, ignore_index=True))
 
 
-def _read_repair_sheet_upload(f, sheet: str) -> pd.DataFrame | None:
-    try:
-        f.seek(0)
-        df = pd.read_excel(f, sheet_name=sheet, header=0, engine="openpyxl")
-    except (ValueError, KeyError):
-        return None  # 시트가 없는 버전의 파일일 수 있다
-    df = df.loc[:, ~df.columns.astype(str).str.startswith("Unnamed")]
-    df = df[df["S/N"].notna()].copy()
-    df["기기"] = "운전자" if "운전자" in sheet else "승차"
-    df["원본파일"] = getattr(f, "name", "업로드파일")
-    return df
-
-
-@st.cache_data(show_spinner="업로드한 수리현황 엑셀을 읽는 중…")
-def load_repair_from_uploads(files) -> pd.DataFrame:
-    """사이드바에서 업로드한 수리현황(E-PASS) 엑셀을 읽어 정규화한다."""
-    frames = []
-    for f in files:
-        for sheet in REPAIR_SHEETS:
-            d = _read_repair_sheet_upload(f, sheet)
-            if d is not None and not d.empty:
-                frames.append(d)
-    if not frames:
-        return pd.DataFrame()
-    return _normalize_repair(pd.concat(frames, ignore_index=True))
-
-
 def build_recurrence(rep: pd.DataFrame, field: pd.DataFrame) -> pd.DataFrame:
     """각 수리 건에 대해, 수리일 이후 그 S/N이 현장에서 다시 `교체전`(고장 이탈)으로
     잡히는 가장 이른 시점을 찾아 붙인다. `merge_asof`로 SN별 다음 사건을 찾는 방식이라
@@ -385,14 +401,21 @@ def build_recurrence(rep: pd.DataFrame, field: pd.DataFrame) -> pd.DataFrame:
 #                        (이번 조치와 무관 - 신규 전환이 아니다)
 #   'B/D교체적용'       = 운전자단말기 내 AFC보드·BMS보드 중 하나 이상을 교체
 # 오타 변형(적용→적요, 차량→차랑)도 실제 데이터에 있어 함께 잡는다.
+#
+# '외장모뎀적용'으로 문구가 표준화되기 전(2025-05-29 이전)에는 같은 신규 전환을
+# '외장형모뎀교체' · '외장모뎀교체' · '외장모뎀 장착'처럼 다르게 적었다 - 이 과거
+# 표현도 신규 전환으로 잡되, 표준화 이후에 같은 문구('교체'/'장착'만, '적용' 없이)가
+# 나오면 그건 대개 이미 전환된 차량의 외장모뎀을 다시 교체한 것이라 날짜로 가른다.
 # ═══════════════════════════════════════════════════════════════════
 
 ACTION_TEXT_COL = TEXT_COLS[1]
 
-_EXT_NEW_RE = r"외장모뎀적[용요](?!차[량랑])"
-_EXT_ALREADY_RE = r"외장모뎀적[용요]차[량랑]"
+_EXT_STD_RE = r"외장모뎀\s?적[용요]"
+_EXT_LEGACY_RE = r"외장(?:형)?모뎀\s?(?:교체|장착)"
+_EXT_ALREADY_RE = r"외장모뎀\s?적[용요]\s?차[량랑]"
 _EXT_REMOVED_RE = r"외장모뎀철거"
 _BD_REPLACED_RE = r"B/D교체적용"
+_EXT_STD_CUTOVER = pd.Timestamp("2025-05-29")  # '외장모뎀적용' 표현이 표준으로 자리잡은 날짜
 
 
 def extract_intervention_events(df: pd.DataFrame,
@@ -400,8 +423,12 @@ def extract_intervention_events(df: pd.DataFrame,
     """세부 조치 내용에서 개선활동 이벤트 플래그를 뽑아 원본에 컬럼으로 붙인다."""
     txt = df[text_col].fillna("")
     out = df.copy()
-    out["외장모뎀_신규전환"] = txt.str.contains(_EXT_NEW_RE, regex=True, na=False)
-    out["외장모뎀_기적용"] = txt.str.contains(_EXT_ALREADY_RE, regex=True, na=False)
+    already = txt.str.contains(_EXT_ALREADY_RE, regex=True, na=False)
+    std_match = txt.str.contains(_EXT_STD_RE, regex=True, na=False)
+    legacy_match = (txt.str.contains(_EXT_LEGACY_RE, regex=True, na=False)
+                    & (df["일자"] < _EXT_STD_CUTOVER))
+    out["외장모뎀_신규전환"] = (std_match | legacy_match) & ~already
+    out["외장모뎀_기적용"] = already
     out["외장모뎀_철거"] = txt.str.contains(_EXT_REMOVED_RE, na=False)
     out["BD보드_교체"] = txt.str.contains(_BD_REPLACED_RE, na=False)
     out["BD보드_단독"] = out["BD보드_교체"] & ~out["외장모뎀_신규전환"] & ~out["외장모뎀_기적용"]

@@ -27,16 +27,17 @@ def _bar_edges(fig, pal: Palette, width: int = 1):
 
 
 def hbar(data: pd.DataFrame, cat: str, val: str, pal: Palette, *,
-         height: int | None = None, color: str | None = None, suffix: str = "건") -> go.Figure:
+         height: int | None = None, color: str | None = None, suffix: str = "건",
+         text_fmt: str = "{:,.0f}", hover_fmt: str = "%{x:,.0f}") -> go.Figure:
     """가로 막대 - 이름이 긴 명목형 범주의 크기 비교용. 한 시리즈 = 한 색."""
     d = data.sort_values(val, ascending=True)
     fig = go.Figure(go.Bar(
         x=d[val], y=d[cat].astype(str), orientation="h",
         marker_color=color or pal.slot(0),
-        text=[f"{v:,.0f}" for v in d[val]],
+        text=[text_fmt.format(v) for v in d[val]],
         textposition="outside", cliponaxis=False,
         textfont=dict(color=pal.c["ink2"], size=15, family="system-ui"),
-        hovertemplate=f"<b>%{{y}}</b><br>%{{x:,.0f}}{suffix}<extra></extra>",
+        hovertemplate=f"<b>%{{y}}</b><br>{hover_fmt}{suffix}<extra></extra>",
     ))
     _bar_edges(fig, pal)
     h = height or max(220, 30 * len(d) + 60)

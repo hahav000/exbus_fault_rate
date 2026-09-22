@@ -60,64 +60,38 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 
-# ── 파일 업로드 (있으면 우선, 없으면 폴더의 파일을 그대로 쓴다) ───────────
-with st.sidebar:
-    st.markdown("### 📤 파일 업로드")
-    st.caption("업로드하면 폴더에 둔 파일 대신 이 파일들을 씁니다. 비워 두면 폴더의 "
-               "파일을 그대로 씁니다.")
-    up_fault = st.file_uploader("장애접수 엑셀 (최대 2개)", type=["xlsm", "xlsx"],
-                                accept_multiple_files=True, key="up_fault")
-    if up_fault and len(up_fault) > 2:
-        st.warning("장애접수 엑셀은 최대 2개까지만 반영합니다 - 처음 2개만 씁니다.")
-        up_fault = up_fault[:2]
-    up_repair = st.file_uploader("수리현황 엑셀 (E-PASS 고속수리)", type=["xlsx"],
-                                 accept_multiple_files=True, key="up_repair")
-
-
-# ── 데이터 적재 ──────────────────────────────────────────────────────
-if up_fault:
-    try:
-        raw = dl.load_data_from_uploads(up_fault)
-        fault_labels = [f"{f.name} (업로드)" for f in up_fault]
-    except Exception as exc:  # 시트 구성이 다르거나 손상된 파일
-        st.error(f"업로드한 장애접수 엑셀을 읽지 못했습니다: {exc}")
-        st.info(f"시트 이름은 `{dl.SHEET}`, 헤더는 3행이어야 합니다.")
-        st.stop()
-else:
-    files = dl.discover_files(BASE_DIR)
-    if not files:
-        st.error(f"`{BASE_DIR}` 에서 `.xlsm` 파일을 찾지 못했습니다. 사이드바에서 "
-                 "장애접수 엑셀을 업로드하거나, `고속 시외 2025년.xlsm` 같은 파일을 "
-                 "이 폴더에 두고 다시 실행하세요.")
-        st.stop()
-    try:
-        raw = dl.load_data(tuple(str(p) for p in files), dl.fingerprint(files))
-    except Exception as exc:  # 엑셀이 열려 있거나 시트 구성이 바뀐 경우
-        st.error(f"엑셀을 읽지 못했습니다: {exc}")
-        st.info("파일이 엑셀에서 열려 있으면 닫은 뒤 새로고침하세요. "
-                f"시트 이름은 `{dl.SHEET}`, 헤더는 3행이어야 합니다.")
-        st.stop()
-    fault_labels = []
-    for p in files:
-        ts = pd.Timestamp(p.stat().st_mtime, unit="s", tz="UTC").tz_convert("Asia/Seoul")
-        fault_labels.append(f"{p.name} · 갱신 {ts:%Y-%m-%d %H:%M} (폴더)")
+# ── 데이터 적재 (항상 이 폴더에 둔 파일을 읽는다) ───────────────────────
+files = dl.discover_files(BASE_DIR)
+if not files:
+    st.error(f"`{BASE_DIR}` 에서 `.xlsm` 파일을 찾지 못했습니다. "
+             "`고속 시외 2025년.xlsm` 같은 파일을 이 폴더에 두고 다시 실행하세요.")
+    st.stop()
+try:
+    raw = dl.load_data(tuple(str(p) for p in files), dl.fingerprint(files))
+except Exception as exc:  # 엑셀이 열려 있거나 시트 구성이 바뀐 경우
+    st.error(f"엑셀을 읽지 못했습니다: {exc}")
+    st.info("파일이 엑셀에서 열려 있으면 닫은 뒤 새로고침하세요. "
+            f"시트 이름은 `{dl.SHEET}`, 헤더는 3행이어야 합니다.")
+    st.stop()
+fault_labels = []
+for p in files:
+    ts = pd.Timestamp(p.stat().st_mtime, unit="s", tz="UTC").tz_convert("Asia/Seoul")
+    fault_labels.append(f"{p.name} · 갱신 {ts:%Y-%m-%d %H:%M} (폴더)")
 
 # E-PASS 고속수리(수리센터 재불량 로그) - 있으면 읽고, 없으면 '개선효과' 탭에서만 안내한다.
 repair_log = pd.DataFrame()
 repair_error = None
-if up_repair:
+repair_files = dl.discover_repair_files(BASE_DIR)
+if repair_files:
     try:
-        repair_log = dl.load_repair_from_uploads(up_repair)
+        repair_log = dl.load_repair_data(tuple(str(p) for p in repair_files),
+                                          dl.fingerprint(repair_files))
     except Exception as exc:
         repair_error = str(exc)
-else:
-    repair_files = dl.discover_repair_files(BASE_DIR)
-    if repair_files:
-        try:
-            repair_log = dl.load_repair_data(tuple(str(p) for p in repair_files),
-                                              dl.fingerprint(repair_files))
-        except Exception as exc:
-            repair_error = str(exc)
+
+# 고속사별 차량대수 (`고속사별차량대수.txt`) - 있으면 고속사별 장애를 "건수"가 아니라
+# "차량 1대당 건수"로 보정해 보여준다. 없으면 건수 기준으로 되돌아간다.
+FLEET_SIZES = dl.load_company_fleet_sizes(BASE_DIR)
 
 
 # ── 사이드바: 데이터 현황 + PPT 보고서 ──────────────────────────────────
@@ -126,7 +100,7 @@ with st.sidebar:
     for label in fault_labels:
         st.caption(label)
     st.caption(f"총 {len(raw):,}건 · {raw['일자'].min():%Y-%m-%d} ~ {raw['일자'].max():%Y-%m-%d}")
-    if not up_fault and st.button("🔄 새로고침", width="stretch"):
+    if st.button("🔄 새로고침", width="stretch"):
         st.cache_data.clear()
         st.rerun()
 
@@ -134,7 +108,9 @@ with st.sidebar:
     st.markdown("### 📊 PPT 보고서")
     st.caption("연도별 월간 추이 · 월별 장애 건수 · 관심유형 월별구성 · 외장모뎀/B/D "
                "현황 · 전후비교, 5장을 자동으로 만듭니다(항상 전체 기간 기준, "
-               "사이드바 필터와 무관).")
+               "사이드바 필터와 무관). 생성 후 바로 아래 나타나는 다운로드 버튼을 "
+               "누르면 각자 PC의 **다운로드** 폴더로 저장됩니다(이 앱을 외부 서버에 "
+               "올려도 동일합니다 - 브라우저가 각자의 컴퓨터로 받습니다).")
     if st.button("📊 PPT 보고서 생성", width="stretch"):
         with st.spinner("차트를 그리고 PPT로 묶는 중… (10~20초)"):
             slides = report_builder.build_report_slides(raw, FOCUS_FAULTS, FLEET_SIZE_EST)
@@ -149,7 +125,7 @@ with st.sidebar:
                           f"자동 생성(고속버스 장애실적 대시보드)",
                 )
                 st.session_state["pptx_name"] = (
-                    f"장애실적_개선효과_보고서_{pd.Timestamp.now():%Y%m%d}.pptx")
+                    f"장애실적_개선효과_보고서_{pd.Timestamp.now():%Y%m%d_%H%M%S}.pptx")
     if "pptx_bytes" in st.session_state:
         st.download_button(
             "⬇️ PPT 다운로드", st.session_state["pptx_bytes"],
@@ -387,9 +363,26 @@ with tabs[1]:
                      caption="0건인 주는 값이 실제로 0이며, 데이터 누락이 아닙니다.")
 
         with right:
-            comp = dl.top_n(foc, "고속사", 10)
-            ch.block("고속사별 4종 합계 Top 10", ch.hbar(comp, "고속사", "건수", PAL, height=340),
-                     comp, "foc_comp", caption="고속사별로 얼마나 자주 겪는지 봅니다.")
+            comp = foc["고속사"].value_counts().rename_axis("고속사").reset_index(name="건수")
+            if FLEET_SIZES:
+                rated = dl.with_fleet_rate(comp, "고속사", FLEET_SIZES)
+                top_rate = (rated.dropna(subset=["차량대수"])
+                                 .sort_values("대당건수", ascending=False).head(10))
+                ch.block(
+                    "고속사별 4종 발생률 (차량 1대당) Top 10",
+                    ch.hbar(top_rate, "고속사", "대당건수", PAL, height=340, suffix="건/대",
+                           text_fmt="{:.2f}", hover_fmt="%{x:,.2f}"),
+                    rated.sort_values("대당건수", ascending=False, na_position="last"),
+                    "foc_comp",
+                    caption="차량 1대당 발생 건수 기준입니다 - 차량이 많은 고속사가 단순 건수만으로 "
+                           "불리하게 보이는 걸 막습니다.",
+                )
+            else:
+                ch.block("고속사별 4종 합계 Top 10",
+                         ch.hbar(comp.head(10), "고속사", "건수", PAL, height=340),
+                         comp, "foc_comp",
+                         caption="고속사별로 얼마나 자주 겪는지 봅니다 - `고속사별차량대수.txt`를 "
+                                "이 폴더에 두면 차량 1대당 발생률로 볼 수 있습니다.")
 
         st.divider()
         left, right = st.columns([3, 2])
@@ -451,7 +444,11 @@ with tabs[2]:
         "`세부 조치 내용` 칸의 문구로 구분합니다 — `외장모뎀적용`은 이번 조치로 외장 LTE모뎀을 "
         "새로 장착했다는 뜻이고, `외장모뎀적용차량`은 이 차량이 이미 전환된 상태라는 맥락 표기일 "
         "뿐 신규 전환이 아닙니다. `B/D교체적용`은 운전자단말기 내 AFC보드·BMS보드 중 하나 이상을 "
-        "교체했다는 뜻입니다(오타 변형도 함께 잡습니다)."
+        "교체했다는 뜻입니다(오타 변형도 함께 잡습니다). `외장모뎀적용`이 표준 문구로 자리잡기 "
+        "전(2025-05-29 이전)에는 `외장형모뎀교체` · `외장모뎀교체` · `외장모뎀 장착`처럼 다르게 "
+        "적힌 경우도 신규 전환으로 함께 잡습니다 — 이 파일에는 제조사(텔라딘·CNSLINK 등) 정보는 "
+        "없어 구분하지 못하며, 고장 출동과 함께 이뤄진 건만 잡히므로 전체 설치 대수보다는 "
+        "적게 집계될 수 있습니다."
     )
     iv = dl.extract_intervention_events(raw)
     n_new = int(iv["외장모뎀_신규전환"].sum())
@@ -908,10 +905,29 @@ with tabs[4]:
         ch.block("처리거점별 건수", ch.hbar(t, "처리거점", "건수", PAL), t, "base")
 
     st.divider()
-    t = dl.top_n(df, "고속사", 15)
-    t["비중"] = (t["건수"] / len(df) * 100).round(1)
-    ch.block("고속사별 장애 건수 Top 15", ch.hbar(t[["고속사", "건수"]], "고속사", "건수", PAL),
-             t, "company")
+    all_counts = df["고속사"].value_counts().rename_axis("고속사").reset_index(name="건수")
+    all_counts["비중"] = (all_counts["건수"] / len(df) * 100).round(1)
+    if FLEET_SIZES:
+        rated = dl.with_fleet_rate(all_counts, "고속사", FLEET_SIZES)
+        unrated = rated.loc[rated["차량대수"].isna(), "고속사"].tolist()
+        top_rate = (rated.dropna(subset=["차량대수"])
+                         .sort_values("대당건수", ascending=False).head(15))
+        cap = ("차량 1대당 발생 건수 = 전체 기간 누적 장애 건수 ÷ 고속사별 차량대수(제공 파일 "
+              "기준) - 단순 건수가 아니라 차량 규모를 반영한 비율입니다.")
+        if unrated:
+            cap += f" 차량대수 미확인: {', '.join(unrated)}(비율 계산 제외, 표에는 건수만 있음)."
+        ch.block(
+            "고속사별 장애 발생률 (차량 1대당) Top 15",
+            ch.hbar(top_rate, "고속사", "대당건수", PAL, suffix="건/대",
+                   text_fmt="{:.2f}", hover_fmt="%{x:,.2f}"),
+            rated.sort_values("대당건수", ascending=False, na_position="last"),
+            "company", caption=cap,
+        )
+    else:
+        ch.block("고속사별 장애 건수 Top 15",
+                 ch.hbar(all_counts.head(15), "고속사", "건수", PAL),
+                 all_counts, "company",
+                 caption="`고속사별차량대수.txt`를 이 폴더에 두면 차량 1대당 발생률로 볼 수 있습니다.")
 
     st.divider()
     comps = df["고속사"].value_counts().head(10).index.tolist()

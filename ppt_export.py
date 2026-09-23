@@ -18,6 +18,27 @@ from pptx.util import Emu, Inches, Pt
 
 from report_builder import Slide
 
+# Streamlit Cloud 같은 배포 환경에는 Chrome이 따로 깔려있지 않아, kaleido(1.0+)가 PNG를
+# 못 뽑고 ChromeNotFoundError를 낸다(로컬은 이미 Chrome이 있어 안 겪는 문제). kaleido가
+# 자체 제공하는 `get_chrome_sync()`로 Chrome for Testing을 한 번만 내려받아 두면 이후
+# to_image() 호출이 그 Chrome을 찾아 쓴다 - 이미 받아져 있으면(버전 태그 일치) 즉시
+# 반환되므로 매번 불러도 비용이 거의 없다.
+_chrome_ready = False
+
+
+def _ensure_chrome() -> None:
+    global _chrome_ready
+    if _chrome_ready:
+        return
+    try:
+        import kaleido
+        if hasattr(kaleido, "get_chrome_sync"):
+            kaleido.get_chrome_sync()
+    except Exception:
+        pass  # 실패해도 이후 to_image() 호출에서 원래 에러가 그대로 드러난다
+    _chrome_ready = True
+
+
 FONT = "맑은 고딕"
 INK = RGBColor(0x0B, 0x0B, 0x0B)
 MUTED = RGBColor(0x52, 0x51, 0x4E)
@@ -146,6 +167,7 @@ def _add_content_slide(prs: Presentation, spec: Slide, index: int, total: int) -
 
 def build_pptx(slides: list[Slide], *, title: str, subtitle: str, footer: str = "") -> bytes:
     """Slide 리스트를 .pptx 바이트로 만든다. 표지 1장 + 내용 슬라이드 순서대로."""
+    _ensure_chrome()
     prs = _new_presentation()
     _add_title_slide(prs, title, subtitle, footer)
     for i, s in enumerate(slides, start=1):

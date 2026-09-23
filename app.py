@@ -206,8 +206,21 @@ foc = scope[scope["장애 대분류"].isin(FOCUS_FAULTS)].copy()
 # ── KPI ─────────────────────────────────────────────────────────────
 def kpis():
     """3열 2행 - 6열로 늘어놓으면 좁은 화면에서 숫자가 말줄임으로 잘린다."""
+    total_fleet = sum(FLEET_SIZES.values()) if FLEET_SIZES else 0
+
+    # 최근 1주(현재 필터가 적용된 df 기준 - 원본 주차 구분(목~수)의 가장 최근 주차)
+    latest_week_key = wk["주차키"].iloc[-1] if not wk.empty else None
+    latest_week_label = wk["주차라벨"].iloc[-1] if not wk.empty else "-"
+    week_df = df[df["주차키"] == latest_week_key] if latest_week_key is not None else df.iloc[0:0]
+    week_count = len(week_df)
+
     c = st.columns(3)
-    c[0].metric("총 장애 건수", f"{len(df):,}건")
+    if total_fleet:
+        c[0].metric("차량대수", f"{total_fleet:,}대",
+                    help="`고속사별차량대수.txt`에 적힌 고속사별 대수를 모두 더한 값입니다.")
+    else:
+        c[0].metric("차량대수", "정보없음",
+                    help="`고속사별차량대수.txt`를 이 폴더에 두면 표시됩니다.")
 
     last4 = int(wk["건수"].tail(4).sum())
     prev4 = int(wk["건수"].tail(8).head(4).sum()) if len(wk) >= 8 else None
@@ -219,18 +232,32 @@ def kpis():
                 help=f"집계 주차 {len(wk)}주 기준")
 
     c = st.columns(3)
-    veh = df["차량번호"].nunique()
-    c[0].metric("대상 차량", f"{veh:,}대",
-                help="기간 내 장애가 1건 이상 발생한 고유 차량 수")
+    if total_fleet:
+        rate = week_count / total_fleet * 100
+        c[0].metric(f"장애율 · {latest_week_label}", f"{rate:.2f}%",
+                    help=f"최근 1주({latest_week_label}) {week_count:,}건 ÷ 전체 차량 "
+                         f"{total_fleet:,}대")
+    else:
+        c[0].metric(f"장애율 · {latest_week_label}", "정보없음",
+                    help="`고속사별차량대수.txt`를 이 폴더에 두면 표시됩니다.")
 
-    rep = int(df["단말기교체"].sum())
-    c[1].metric("단말기 교체", f"{rep:,}건", delta=f"전체의 {rep / len(df) * 100:.0f}%",
-                delta_color="off", delta_arrow="off")
+    week_comp = week_df["고속사"].value_counts()
+    if len(week_comp):
+        top3 = week_comp.head(3)
+        rest = " · ".join(f"{i}위 {name} {int(n):,}건"
+                          for i, (name, n) in enumerate(top3.iloc[1:].items(), start=2))
+        c[1].metric(f"1주간 최다 장애 고속사 · {top3.index[0]}", f"{int(top3.iloc[0]):,}건",
+                    delta=rest or None, delta_color="off", delta_arrow="off",
+                    help=f"{latest_week_label} 기준 상위 3개 고속사")
+    else:
+        c[1].metric("1주간 최다 장애 고속사", "데이터 없음")
 
-    topf = df["장애 대분류"].value_counts()
-    c[2].metric(f"최다 장애유형 · {topf.index[0]}", f"{topf.iloc[0]:,}건",
-                delta=f"전체의 {topf.iloc[0] / len(df) * 100:.0f}%",
-                delta_color="off", delta_arrow="off")
+    week_fault = week_df["장애 대분류"].value_counts()
+    if len(week_fault):
+        c[2].metric(f"최다 장애유형(1주) · {week_fault.index[0]}", f"{int(week_fault.iloc[0]):,}건",
+                    help=f"{latest_week_label} 기준")
+    else:
+        c[2].metric("최다 장애유형(1주)", "데이터 없음")
 
 
 kpis()

@@ -107,10 +107,9 @@ with st.sidebar:
     st.divider()
     st.markdown("### 📊 PPT 보고서")
     st.caption("연도별 월간 추이 · 월별 장애 건수 · 관심유형 월별구성 · 외장모뎀/B/D "
-               "현황 · 전후비교, 5장을 자동으로 만듭니다(항상 전체 기간 기준, "
-               "사이드바 필터와 무관). 생성 후 바로 아래 나타나는 다운로드 버튼을 "
-               "누르면 각자 PC의 **다운로드** 폴더로 저장됩니다(이 앱을 외부 서버에 "
-               "올려도 동일합니다 - 브라우저가 각자의 컴퓨터로 받습니다).")
+               "현황 · 전후비교, 5장을 자동으로 만듭니다. 생성 후 바로 아래 나타나는 "
+               "다운로드 버튼을 누르면 각자 PC의 **다운로드** 폴더로 저장됩니다(이 앱을 "
+               "외부 서버에 올려도 동일합니다 - 브라우저가 각자의 컴퓨터로 받습니다).")
     if st.button("📊 PPT 보고서 생성", width="stretch"):
         with st.spinner("차트를 그리고 PPT로 묶는 중… (10~20초)"):
             slides = report_builder.build_report_slides(raw, FOCUS_FAULTS, FLEET_SIZE_EST)
@@ -136,71 +135,23 @@ with st.sidebar:
         )
 
 
-# ── 필터 (모든 차트가 같은 구간을 본다) ────────────────────────────────
-with st.sidebar:
-    st.divider()
-    st.markdown("### 🔎 필터")
-
-    dmin, dmax = raw["일자"].min().date(), raw["일자"].max().date()
-    preset = st.radio("기간", ["전체", "최근 12주", "최근 26주", "올해", "직접 선택"],
-                      index=0, horizontal=False)
-    if preset == "전체":
-        d_from, d_to = dmin, dmax
-    elif preset == "최근 12주":
-        d_from, d_to = (raw["일자"].max() - pd.Timedelta(weeks=12)).date(), dmax
-    elif preset == "최근 26주":
-        d_from, d_to = (raw["일자"].max() - pd.Timedelta(weeks=26)).date(), dmax
-    elif preset == "올해":
-        d_from, d_to = pd.Timestamp(dmax.year, 1, 1).date(), dmax
-    else:
-        picked = st.date_input("직접 선택", value=(dmin, dmax),
-                               min_value=dmin, max_value=dmax)
-        d_from, d_to = picked if isinstance(picked, tuple) and len(picked) == 2 else (dmin, dmax)
-
-    def multi(label: str, col: str):
-        opts = sorted(raw[col].dropna().unique().tolist())
-        return st.multiselect(label, opts, default=[], placeholder="전체")
-
-    f_region = multi("처리지역", "처리지역")
-    f_base = multi("처리거점", "처리거점")
-    f_comp = multi("고속사", "고속사")
-    f_dev = multi("단말기 구분", "단말기 구분")
-    f_fault = multi("장애 대분류", "장애 대분류")
-    f_action = multi("처리 대분류", "처리 대분류")
-    f_staff = multi("처리담당자", "처리담당자")
-    f_type = multi("접수구분", "접수구분")
-
-mask = (raw["일자"].dt.date >= d_from) & (raw["일자"].dt.date <= d_to)
-for col, sel in [("처리지역", f_region), ("처리거점", f_base), ("고속사", f_comp),
-                 ("단말기 구분", f_dev), ("장애 대분류", f_fault),
-                 ("처리 대분류", f_action), ("처리담당자", f_staff), ("접수구분", f_type)]:
-    if sel:
-        mask &= raw[col].isin(sel)
-df = raw[mask].copy()
+# ── 항상 전체 기간·전체 데이터를 본다(사이드바 필터 없음) ──────────────────
+dmin, dmax = raw["일자"].min().date(), raw["일자"].max().date()
+d_from, d_to = dmin, dmax
+df = raw.copy()
 
 st.title("🚌 고속버스 단말기 장애실적 대시보드")
-st.caption(f"{d_from:%Y-%m-%d} ~ {d_to:%Y-%m-%d} · 선택 {len(df):,}건 / 전체 {len(raw):,}건"
-           + ("  ·  필터 적용중" if len(df) != len(raw) else ""))
+st.caption(f"{d_from:%Y-%m-%d} ~ {d_to:%Y-%m-%d} · 전체 {len(raw):,}건")
 
 if df.empty:
-    st.warning("선택한 조건에 해당하는 데이터가 없습니다. 사이드바에서 필터를 완화하세요.")
+    st.warning("데이터가 없습니다.")
     st.stop()
 
 wk = dl.weekly_counts(df)
 
-# 관심 장애유형 탭 전용 범위 - 사이드바의 다른 필터(기간·지역·고속사·담당자 등)는
-# 그대로 따르되, '장애 대분류' 필터만은 적용하지 않는다. 이 탭 자체가 특정 장애유형을
-# 골라 보는 화면이라, 장애대분류 필터에 다른 값이 걸려 있으면 화면이 비어버리기 때문.
-_scope_mask = (raw["일자"].dt.date >= d_from) & (raw["일자"].dt.date <= d_to)
-for _col, _sel in [("처리지역", f_region), ("처리거점", f_base), ("고속사", f_comp),
-                    ("단말기 구분", f_dev), ("처리 대분류", f_action),
-                    ("처리담당자", f_staff), ("접수구분", f_type)]:
-    if _sel:
-        _scope_mask &= raw[_col].isin(_sel)
-scope = raw[_scope_mask].copy()
+# 관심 장애유형 탭 전용 범위 - 필터가 없으므로 raw 전체와 같다.
+scope = raw.copy()
 foc = scope[scope["장애 대분류"].isin(FOCUS_FAULTS)].copy()
-# repair_log/repair_error는 위 '데이터 적재' 단계에서 이미 채워져 있다
-# (사이드바 필터와 무관하게 항상 전체 기간 - 단말기 S/N에는 지역·고속사 정보가 없다).
 
 
 # ── KPI ─────────────────────────────────────────────────────────────
@@ -208,7 +159,7 @@ def kpis():
     """3열 2행 - 6열로 늘어놓으면 좁은 화면에서 숫자가 말줄임으로 잘린다."""
     total_fleet = sum(FLEET_SIZES.values()) if FLEET_SIZES else 0
 
-    # 최근 1주(현재 필터가 적용된 df 기준 - 원본 주차 구분(목~수)의 가장 최근 주차)
+    # 최근 1주(원본 주차 구분(목~수)의 가장 최근 주차)
     latest_week_key = wk["주차키"].iloc[-1] if not wk.empty else None
     latest_week_label = wk["주차라벨"].iloc[-1] if not wk.empty else "-"
     week_df = df[df["주차키"] == latest_week_key] if latest_week_key is not None else df.iloc[0:0]
@@ -347,13 +298,12 @@ with tabs[0]:
 with tabs[1]:
     st.markdown("**통신·연결 계열 4종 장애**")
     st.caption(
-        "이 탭은 사이드바의 '장애 대분류' 필터와 무관하게 이 4종만 봅니다 "
-        "(기간·지역·고속사 등 나머지 필터는 그대로 적용됩니다). "
-        f"선택 범위 {len(scope):,}건 중 {len(foc):,}건({len(foc) / max(len(scope), 1) * 100:.0f}%)."
+        "이 탭은 전체 데이터 중 통신·연결 계열 4종만 골라 봅니다. "
+        f"전체 {len(scope):,}건 중 {len(foc):,}건({len(foc) / max(len(scope), 1) * 100:.0f}%)."
     )
 
     if foc.empty:
-        st.info("선택한 범위에는 이 4종 장애가 없습니다. 기간이나 다른 필터를 넓혀 보세요.")
+        st.info("데이터에 이 4종 장애가 없습니다.")
     else:
         counts = foc["장애 대분류"].value_counts()
         foc_wk = dl.weekly_counts(foc)
@@ -369,7 +319,7 @@ with tabs[1]:
             c[i].metric(name, f"{n:,}건",
                         delta=f"{n / max(len(scope), 1) * 100:.0f}%",
                         delta_color="off", delta_arrow="off",
-                        help="선택 범위 전체(장애대분류 필터 제외) 대비 비중")
+                        help="전체 장애 건수 대비 비중")
 
         st.divider()
         left, right = st.columns([3, 2])
@@ -460,7 +410,7 @@ with tabs[1]:
 with tabs[2]:
     st.markdown("**외장 LTE모뎀 전환 · 수리포인트가 필드 장애에 미친 효과**")
     st.caption(
-        "이 탭은 사이드바 필터와 무관하게 전체 기간을 봅니다. 2025년 하반기부터 일부 단말의 "
+        "이 탭은 항상 전체 기간을 봅니다. 2025년 하반기부터 일부 단말의 "
         "내장 LTE모뎀을 외장으로 전환 중이고, 2026년 2월부터는 수리센터(E-PASS)에서 "
         "LTE·BMS·승차연결지연 관련 보드 수리포인트를 잡아 수리를 진행하고 있습니다."
     )
@@ -1073,7 +1023,7 @@ with tabs[6]:
 
 # ── 6. 원본 데이터 ───────────────────────────────────────────────────
 with tabs[7]:
-    st.markdown("**필터가 적용된 원본 데이터**")
+    st.markdown("**원본 데이터 (전체)**")
     cols = ["일자", "주차라벨", "접수구분", "처리지역", "처리거점", "고속사", "차량번호",
             "단말기 구분", "장애 대분류", "처리 대분류", "장애 접수 내용",
             "세부 조치 내용 (현장 확인 증상 / 조치내용)", "처리담당자", "교체전", "교체후",
@@ -1083,7 +1033,7 @@ with tabs[7]:
     st.dataframe(view, hide_index=True, height=560,
                  column_config={"일자": st.column_config.DateColumn("일자", format="YYYY-MM-DD")})
     st.download_button("전체 CSV 내려받기", view.to_csv(index=False).encode("utf-8-sig"),
-                       file_name="고속Rawdata_필터결과.csv", mime="text/csv", key="d_raw")
+                       file_name="고속Rawdata_전체.csv", mime="text/csv", key="d_raw")
 
     st.divider()
     with st.expander("표기 정규화 내역 — 원본의 오타·공백을 이렇게 통일했습니다"):
